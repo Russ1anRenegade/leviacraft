@@ -19,6 +19,7 @@ LC_MSG = {
     CLR_LIST   = "CL",   -- clear all my listings before re-broadcast
     CLR_BUY    = "CB",   -- clear all my orders before re-broadcast
     BYE        = "BY",   -- player logging out
+    BEAT       = "BT",   -- heartbeat ping (sent every 15s)
 }
 
 -- Max bytes per SendAddonMessage payload (vanilla safe limit)
@@ -476,6 +477,13 @@ LC_ChunkBuffer = {}   -- [sender][msgType] = { total, parts = {} }
 -- LC_ChunkBuffer kept for safety but no longer used
 LC_ChunkBuffer = {}
 
+-- Heartbeat tracking
+-- LC_HeartbeatMissed[player] = number of consecutive missed beats
+LC_HeartbeatMissed  = {}
+LC_BEAT_INTERVAL    = 15    -- seconds between heartbeats
+LC_BEAT_MISS_LIMIT  = 3     -- missed beats before marking offline
+LC_BeatAcc          = 0
+
 -- UI dirty flag - set true whenever data changes, polled every 0.2s
 -- Matches PallyPower uiDirty pattern for real-time updates
 LC_UIDirty   = false
@@ -586,10 +594,23 @@ function LC_DispatchMessage(msgType, payload, sender)
         LC_UIDirty = true
 
     elseif msgType == LC_MSG.BYE then
-        -- sender is logging out - mark offline
         if LC_Registry[sender] then
             LC_Registry[sender].online = false
             LC_UIDirty = true
+        end
+        LC_HeartbeatMissed[sender] = 0
+
+    elseif msgType == LC_MSG.BEAT then
+        -- Heartbeat received - player is online, reset their miss counter
+        LC_HeartbeatMissed[sender] = 0
+        if LC_Registry[sender] then
+            if not LC_Registry[sender].online then
+                LC_Registry[sender].online = true
+                LC_UIDirty = true
+            end
+        else
+            -- Unknown player sending a beat - request their data
+            LC_Send(LC_MSG.REQUEST, sender)
         end
     end
 end
@@ -615,6 +636,7 @@ function LC_HandleProfData(payload, sender)
         updated = GetTime(),
         online  = true,
     }
+    LC_HeartbeatMissed[name] = 0
 
     LC_UIDirty = true
 end
@@ -756,18 +778,40 @@ function LC_StartScanTicker()
 
     LC_ScanTicker = CreateFrame("Frame")
     LC_ScanTicker:SetScript("OnUpdate", function()
-        LC_ScanElapsed = LC_ScanElapsed + arg1
+        local dt = arg1
+
+        -- Data broadcast ticker
+        LC_ScanElapsed = LC_ScanElapsed + dt
         if LC_ScanElapsed >= LC_SCAN_INTERVAL then
             LC_ScanElapsed = 0
-            -- Don't broadcast while user is actively using the UI
-            -- (post tab open, dropdown showing) to avoid disrupting their flow
             if not LC_UIIsBusy() then
                 LC_BroadcastProfessions(true)
                 LC_TickerBroadcastListings()
             else
-                -- Defer: will fire next tick
                 LC_ScanElapsed = LC_SCAN_INTERVAL - 3
             end
+        end
+
+        -- Heartbeat ticker
+        LC_BeatAcc = LC_BeatAcc + dt
+        if LC_BeatAcc >= LC_BEAT_INTERVAL then
+            LC_BeatAcc = 0
+            -- Send our heartbeat
+            LC_Send(LC_MSG.BEAT, UnitName("player"))
+            -- Increment missed count for everyone in registry
+            -- (will be cleared when we receive their beat)
+            local dirty = false
+            for name, data in pairs(LC_Registry) do
+                if name ~= UnitName("player") and data.online then
+                    LC_HeartbeatMissed[name] = (LC_HeartbeatMissed[name] or 0) + 1
+                    if LC_HeartbeatMissed[name] >= LC_BEAT_MISS_LIMIT then
+                        data.online = false
+                        LC_HeartbeatMissed[name] = 0
+                        dirty = true
+                    end
+                end
+            end
+            if dirty then LC_UIDirty = true end
         end
     end)
 end
