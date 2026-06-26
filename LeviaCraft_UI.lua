@@ -1095,23 +1095,28 @@ function LC_DrawPostPanel()
             local iCol = entry.isMat and CLR.white or CLR.gold
             rl:SetText(iCol .. entry.item .. CLR.reset)
 
-            if entry.crafter then
-                local cd = LC_Registry[entry.crafter]
+            if capturedCrafter then
+                local cd = LC_Registry[capturedCrafter]
                 local cc = LC_ClassColor(cd and cd.class or nil)
                 local cl = rf:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
                 cl:SetPoint("RIGHT", rf, "RIGHT", -4, 0)
                 cl:SetWidth(90)
                 cl:SetJustifyH("RIGHT")
-                cl:SetText(CLR.grey .. "by |c" .. cc .. entry.crafter .. CLR.reset)
+                cl:SetText(CLR.grey .. "by |c" .. cc .. capturedCrafter .. CLR.reset)
             end
+
+            -- Capture per-iteration values to avoid Lua 5.0 closure upvalue issue
+            local capturedItem    = entry.item
+            local capturedIsMat   = entry.isMat
+            local capturedCrafter = entry.crafter
 
             rf:SetScript("OnEnter", function()
                 rbg:SetTexture(0.15, 0.45, 0.75, 0.4)
-                if crafterMap then
-                    local crafters = crafterMap[entry.item]
+                if crafterMap and not capturedIsMat then
+                    local crafters = crafterMap[capturedItem]
                     if crafters and table.getn(crafters) > 0 then
                         GameTooltip:SetOwner(rf, "ANCHOR_LEFT")
-                        GameTooltip:SetText(entry.item)
+                        GameTooltip:SetText(capturedItem)
                         GameTooltip:AddLine("Can be crafted by:", 0.5, 0.8, 1)
                         for _, c in ipairs(crafters) do
                             local cd = LC_Registry[c]
@@ -1127,9 +1132,8 @@ function LC_DrawPostPanel()
                 GameTooltip:Hide()
             end)
 
-            local itemName = entry.item
             rf:SetScript("OnClick", function()
-                itemEB:SetText(itemName)
+                itemEB:SetText(capturedItem)
                 CloseDropdown()
             end)
 

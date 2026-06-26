@@ -482,14 +482,30 @@ LC_UIDirty   = false
 LC_UIPollAcc = 0
 LC_UI_POLL   = 0.2   -- seconds between UI refresh checks
 
+-- UI is "busy" when the dropdown is open, an editbox has focus,
+-- or the user is on the Post tab filling in a form.
+-- Never refresh while busy - it destroys dropdowns and kicks editbox focus.
+function LC_UIIsBusy()
+    -- Dropdown open
+    if LC_DropdownOpen then return true end
+    -- Post tab active (user may be typing)
+    if LC_ActiveTab == "post" then return true end
+    -- Recipe panel open
+    if LC_RecipePanel and LC_RecipePanel:IsShown() then return true end
+    return false
+end
+
 local lcUIPoll = CreateFrame("Frame")
 lcUIPoll:SetScript("OnUpdate", function()
     LC_UIPollAcc = LC_UIPollAcc + arg1
     if LC_UIPollAcc >= LC_UI_POLL then
         LC_UIPollAcc = 0
         if LC_UIDirty and LC_Window and LC_Window:IsShown() then
-            LC_UIDirty = false
-            LC_RefreshUI()
+            if not LC_UIIsBusy() then
+                LC_UIDirty = false
+                LC_RefreshUI()
+            end
+            -- If busy, leave dirty=true and retry next poll
         end
     end
 end)
@@ -743,8 +759,15 @@ function LC_StartScanTicker()
         LC_ScanElapsed = LC_ScanElapsed + arg1
         if LC_ScanElapsed >= LC_SCAN_INTERVAL then
             LC_ScanElapsed = 0
-            LC_BroadcastProfessions(true)
-            LC_TickerBroadcastListings()   -- no CLR, just resend
+            -- Don't broadcast while user is actively using the UI
+            -- (post tab open, dropdown showing) to avoid disrupting their flow
+            if not LC_UIIsBusy() then
+                LC_BroadcastProfessions(true)
+                LC_TickerBroadcastListings()
+            else
+                -- Defer: will fire next tick
+                LC_ScanElapsed = LC_SCAN_INTERVAL - 3
+            end
         end
     end)
 end
