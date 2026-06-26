@@ -1,0 +1,10 @@
+## Interface: 11203
+## Title: LeviaCraft
+## Notes: Levia guild crafting marketplace - profession registry, buy orders, and craft requests
+## Author: Levia
+## Version: 1.0
+## LoadOnDemand: 0
+## SavedVariables: LeviaCraftDB
+
+LeviaCraft.lua
+LeviaCraft_UI.lua
