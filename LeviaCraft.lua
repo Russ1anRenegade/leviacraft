@@ -50,6 +50,9 @@ function LC_InitDB()
     if not LeviaCraftDB.registry then
         LeviaCraftDB.registry = {}    -- persisted profession data keyed by player name
     end
+    if not LeviaCraftDB.deleted then
+        LeviaCraftDB.deleted = {}     -- tombstones: id -> { owner, time } for deleted listings/orders
+    end
     if not LeviaCraftDB.prefs then
         LeviaCraftDB.prefs = { minimap_angle = 200, minimap_show = true }
     end
@@ -304,14 +307,21 @@ function LC_JoinChannel()
 end
 
 function LC_HideChannel(channelId)
-    -- Remove the LeviaCraft channel from every chat frame
-    -- so messages don't appear in chat at all
     if not channelId then return end
-    for i = 1, NUM_CHAT_WINDOWS do
-        local frame = _G["ChatFrame" .. i]
+    -- Remove from all chat frames (vanilla 1.12 global function)
+    for i = 1, 10 do
+        local frame = getglobal("ChatFrame" .. i)
         if frame then
             ChatFrame_RemoveChannel(frame, LC_CHANNEL_NAME)
         end
+    end
+    -- Set text color to fully transparent so any that slip through are invisible
+    local key = "CHANNEL" .. tostring(channelId)
+    if ChatTypeInfo and ChatTypeInfo[key] then
+        ChatTypeInfo[key].r = 0
+        ChatTypeInfo[key].g = 0
+        ChatTypeInfo[key].b = 0
+        ChatTypeInfo[key].hidden = 1
     end
 end
 
@@ -352,7 +362,9 @@ function LC_RawSend(msg)
 end
 
 function LC_Send(msgType, payload)
-    local msg = LEVIA_CRAFT_PREFIX .. ":" .. msgType .. ":" .. (payload or "")
+    -- Encrypt msgType:payload, prepend unencrypted prefix for filtering
+    local plain = msgType .. ":" .. (payload or "")
+    local msg   = LEVIA_CRAFT_PREFIX .. ":" .. LC_Encrypt(plain)
     if string.len(msg) > 240 then msg = string.sub(msg, 1, 240) end
 
     if LC_PRIORITY_MSGS[msgType] then
@@ -440,6 +452,7 @@ end
 -- Avoids race where CLR arrives but POST hasn't yet, causing items to vanish.
 function LC_TickerBroadcastListings()
     local me = UnitName("player")
+    -- Re-broadcast active listings
     for id, l in pairs(LeviaCraftDB.listings) do
         if l.crafter == me then
             local payload = id .. "~" .. me .. "~" .. (l.item or "") .. "~" .. (l.price or "Tips/Mats") .. "~" .. (l.note or "")
@@ -452,6 +465,18 @@ function LC_TickerBroadcastListings()
             LC_Send(LC_MSG.POST_BUY, payload)
         end
     end
+    -- Re-broadcast our tombstones so late joiners apply our deletes
+    for id, tomb in pairs(LeviaCraftDB.deleted) do
+        if tomb.owner == me then
+            if tomb.kind == "L" then
+                LC_Send(LC_MSG.DEL_LIST, id)
+            else
+                LC_Send(LC_MSG.DEL_BUY, id)
+            end
+        end
+    end
+    -- Prune old tombstones periodically
+    LC_PruneTombstones()
 end
 
 -- ============================================================
@@ -517,6 +542,8 @@ end
 function LC_DeleteListing(id)
     LC_MyListings[id] = nil
     LeviaCraftDB.listings[id] = nil
+    -- Store tombstone so ticker can re-broadcast the delete to late joiners
+    LeviaCraftDB.deleted[id] = { owner = UnitName("player"), t = GetTime(), kind = "L" }
     LC_Send(LC_MSG.DEL_LIST, id)
     LC_UIDirty = true
 end
@@ -524,8 +551,19 @@ end
 function LC_DeleteBuyOrder(id)
     LC_MyBuys[id] = nil
     LeviaCraftDB.orders[id] = nil
+    LeviaCraftDB.deleted[id] = { owner = UnitName("player"), t = GetTime(), kind = "B" }
     LC_Send(LC_MSG.DEL_BUY, id)
     LC_UIDirty = true
+end
+
+-- Prune tombstones older than 24 hours (86400s) to keep SavedVariables tidy
+function LC_PruneTombstones()
+    local now = GetTime()
+    for id, tomb in pairs(LeviaCraftDB.deleted) do
+        if (now - tomb.t) > 86400 then
+            LeviaCraftDB.deleted[id] = nil
+        end
+    end
 end
 
 -- Cycle status: open -> mats_sent -> in_progress -> filled -> open
@@ -687,10 +725,13 @@ function LC_DispatchMessage(msgType, payload, sender)
 
     elseif msgType == LC_MSG.DEL_LIST then
         LeviaCraftDB.listings[payload] = nil
+        -- Store tombstone so re-broadcast of old POST doesn't resurrect it
+        LeviaCraftDB.deleted[payload] = { owner = sender, t = GetTime(), kind = "L" }
         LC_UIDirty = true
 
     elseif msgType == LC_MSG.DEL_BUY then
         LeviaCraftDB.orders[payload] = nil
+        LeviaCraftDB.deleted[payload] = { owner = sender, t = GetTime(), kind = "B" }
         LC_UIDirty = true
 
     elseif msgType == LC_MSG.FILL_BUY then
@@ -701,11 +742,11 @@ function LC_DispatchMessage(msgType, payload, sender)
         LC_UIDirty = true
 
     elseif msgType == LC_MSG.CLR_LIST then
-        -- payload is the crafter name - wipe all their listings
         local crafter = payload
         for id, l in pairs(LeviaCraftDB.listings) do
             if l.crafter == crafter then
                 LeviaCraftDB.listings[id] = nil
+                LeviaCraftDB.deleted[id] = { owner = crafter, t = GetTime(), kind = "L" }
             end
         end
         LC_UIDirty = true
@@ -715,6 +756,7 @@ function LC_DispatchMessage(msgType, payload, sender)
         for id, o in pairs(LeviaCraftDB.orders) do
             if o.buyer == buyer then
                 LeviaCraftDB.orders[id] = nil
+                LeviaCraftDB.deleted[id] = { owner = buyer, t = GetTime(), kind = "B" }
             end
         end
         LC_UIDirty = true
@@ -772,6 +814,8 @@ end
 function LC_HandleListing(payload)
     local id, crafter, item, price, note = LC_Match(payload, "^([^~]+)~([^~]+)~([^~]+)~([^~]+)~(.*)$")
     if not id then return end
+    -- Ignore if we have a tombstone for this ID (it was deleted)
+    if LeviaCraftDB.deleted[id] then return end
     LeviaCraftDB.listings[id] = {
         id = id, crafter = crafter, item = item,
         price = price, note = note, posted = GetTime(),
@@ -782,6 +826,8 @@ end
 function LC_HandleBuyOrder(payload)
     local id, buyer, item, payment, note = LC_Match(payload, "^([^~]+)~([^~]+)~([^~]+)~([^~]+)~(.*)$")
     if not id then return end
+    -- Ignore if tombstoned
+    if LeviaCraftDB.deleted[id] then return end
     LeviaCraftDB.orders[id] = {
         id = id, buyer = buyer, item = item,
         payment = payment, note = note, posted = GetTime(),
