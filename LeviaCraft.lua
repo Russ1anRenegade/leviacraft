@@ -3,7 +3,7 @@
 -- Profession registry + buy orders + craft listings via addon messaging
 
 LEVIA_CRAFT_PREFIX = "LeviaCraft"
-LEVIA_CRAFT_VERSION = 1
+LEVIA_CRAFT_VERSION = "1.0"
 
 -- Message type tokens (kept short to save message space)
 LC_MSG = {
@@ -537,21 +537,31 @@ function LC_DispatchMessage(msgType, payload, sender)
         LC_HandleProfData(payload, sender)
 
     elseif msgType == LC_MSG.HELLO then
-        -- sender just logged in - mark them online
-        if LC_Registry[sender] then
+        -- Someone logged in: mark them online (create stub if unknown)
+        -- and respond with our data + a beat so they see us immediately
+        if not LC_Registry[sender] then
+            LC_Registry[sender] = { profs = {}, online = true, updated = GetTime() }
+        else
             LC_Registry[sender].online = true
-            LC_UIDirty = true
         end
-        LC_ScheduleBroadcast(math.random(0, 4))
-        LC_ScheduleListingBroadcast(math.random(1, 6))
+        LC_HeartbeatMissed[sender] = 0
+        LC_UIDirty = true
+        -- Respond: send our beat immediately so they see us, then full data
+        LC_Send(LC_MSG.BEAT, UnitName("player"))
+        LC_ScheduleBroadcast(math.random(1, 4))
+        LC_ScheduleListingBroadcast(math.random(2, 6))
 
     elseif msgType == LC_MSG.REQUEST then
+        -- Someone wants our data - send beat first so they see us online fast
+        LC_Send(LC_MSG.BEAT, UnitName("player"))
         LC_ScheduleBroadcast(math.random(0, 2))
         LC_ScheduleListingBroadcast(math.random(1, 4))
 
     elseif msgType == LC_MSG.PING then
-        LC_ScheduleBroadcast(math.random(0, 6))
-        LC_ScheduleListingBroadcast(math.random(2, 8))
+        -- Refresh requested: send beat immediately + full data with jitter
+        LC_Send(LC_MSG.BEAT, UnitName("player"))
+        LC_ScheduleBroadcast(math.random(1, 5))
+        LC_ScheduleListingBroadcast(math.random(2, 7))
 
     elseif msgType == LC_MSG.POST_LIST then
         LC_HandleListing(payload)
@@ -601,7 +611,6 @@ function LC_DispatchMessage(msgType, payload, sender)
         LC_HeartbeatMissed[sender] = 0
 
     elseif msgType == LC_MSG.BEAT then
-        -- Heartbeat received - player is online, reset their miss counter
         LC_HeartbeatMissed[sender] = 0
         if LC_Registry[sender] then
             if not LC_Registry[sender].online then
@@ -609,7 +618,10 @@ function LC_DispatchMessage(msgType, payload, sender)
                 LC_UIDirty = true
             end
         else
-            -- Unknown player sending a beat - request their data
+            -- New player - create stub entry so they appear online immediately
+            -- then request their full data
+            LC_Registry[sender] = { profs = {}, online = true, updated = GetTime() }
+            LC_UIDirty = true
             LC_Send(LC_MSG.REQUEST, sender)
         end
     end

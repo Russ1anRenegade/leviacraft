@@ -49,7 +49,7 @@ function LC_CreateWindow()
     -- Title
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("TOP", f, "TOP", 0, -12)
-    title:SetText(CLR.teal .. "Levia" .. CLR.reset .. "Craft  " .. CLR.grey .. "Guild Marketplace" .. CLR.reset)
+    title:SetText(CLR.teal .. "Levia" .. CLR.reset .. "Craft " .. CLR.grey .. "v" .. LEVIA_CRAFT_VERSION .. "  Guild Marketplace" .. CLR.reset)
 
     -- Close button
     local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
@@ -160,13 +160,11 @@ function LC_CreateWindow()
     refBtn:SetWidth(70)
     refBtn:SetHeight(22)
     refBtn:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -18, 14)
-    refBtn:SetText("Refresh")
+    refBtn:SetText("Ping")
     refBtn:SetScript("OnClick", function()
-        -- Refresh local UI immediately from cached data
         LC_RefreshUI()
-        -- Then request fresh data from others (staggered to avoid channel flood)
         LC_Send(LC_MSG.PING, "")
-        f.status:SetText(CLR.grey .. "Requested update from channel..." .. CLR.reset)
+        f.status:SetText(CLR.teal .. "Pinged channel — waiting for responses..." .. CLR.reset)
     end)
 
     LC_Window = f
