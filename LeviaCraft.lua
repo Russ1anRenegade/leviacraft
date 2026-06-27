@@ -289,7 +289,7 @@ end
 LC_CHANNEL_NAME = "LeviaCraft"
 LC_CHANNEL_ID   = nil    -- set once we confirm the channel number
 LC_SendQueue    = {}
-LC_SEND_RATE    = 1.5    -- seconds between sends
+LC_SEND_RATE    = 3.5    -- seconds between sends (2s added for anti-spam)
 LC_SendAcc      = 0
 
 -- Join our custom channel on load; retry if not yet available
@@ -350,8 +350,10 @@ LC_PRIORITY_MSGS = {
     [LC_MSG.BYE]       = true,
     [LC_MSG.PING]      = true,
 }
-LC_LastPrioritySend = 0
-LC_PRIORITY_RATE    = 0.5   -- minimum gap between priority sends (anti-spam)
+LC_LastPrioritySend  = 0
+LC_PRIORITY_RATE     = 2.5   -- minimum gap between priority sends (anti-spam)
+LC_LastChannelRecv   = 0     -- time we last saw ANY message on the channel
+LC_INTER_PLAYER_GAP  = 1.0   -- seconds to wait after others speak before sending
 
 function LC_RawSend(msg)
     if not LC_CHANNEL_ID then
@@ -370,7 +372,9 @@ function LC_Send(msgType, payload)
     if LC_PRIORITY_MSGS[msgType] then
         -- Send immediately if enough time has passed, else front of queue
         local now = GetTime()
-        if (now - LC_LastPrioritySend) >= LC_PRIORITY_RATE then
+        local sinceRecv = now - LC_LastChannelRecv
+        local sinceSent = now - LC_LastPrioritySend
+        if sinceSent >= LC_PRIORITY_RATE and sinceRecv >= LC_INTER_PLAYER_GAP then
             if LC_RawSend(msg) then
                 LC_LastPrioritySend = now
                 return
@@ -390,6 +394,8 @@ lcThrottle:SetScript("OnUpdate", function()
     if table.getn(LC_SendQueue) == 0 then return end
     LC_SendAcc = LC_SendAcc + arg1
     if LC_SendAcc < LC_SEND_RATE then return end
+    -- Also wait for inter-player gap before bulk sends
+    if (GetTime() - LC_LastChannelRecv) < LC_INTER_PLAYER_GAP then return end
     LC_SendAcc = 0
     local msg = table.remove(LC_SendQueue, 1)
     LC_RawSend(msg)
@@ -674,6 +680,8 @@ end)
 -- arg1=message, arg2=sender, arg3=language, arg4=channelString, arg5=?, arg6=?, arg7=channelNum, arg8=channelName
 function LC_OnChannelMessage(msg, sender)
     if sender == UnitName("player") then return end
+    -- Track when others last spoke so we can pause before sending
+    LC_LastChannelRecv = GetTime()
     -- Check prefix (unencrypted marker)
     if not string.find(msg, "^" .. LEVIA_CRAFT_PREFIX .. ":") then return end
     -- Strip prefix, decrypt the rest

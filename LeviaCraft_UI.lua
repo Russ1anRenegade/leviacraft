@@ -482,7 +482,14 @@ function LC_DrawListings()
         y = y - ROW_HEIGHT - ROW_PAD
         count = count + 1
 
-        local isMe = (l.crafter == me)
+        -- Capture all fields before closures (Lua 5.0 upvalue fix)
+        local cLcrafter = l.crafter or "?"
+        local cLitem    = l.item    or "?"
+        local cLprice   = l.price   or ""
+        local cLnote    = l.note    or ""
+        local cLid2     = l.id      or ""
+
+        local isMe = (cLcrafter == me)
 
         -- Crafter
         local crafterData = LC_Registry[l.crafter]
@@ -515,9 +522,9 @@ function LC_DrawListings()
             del:SetHeight(18)
             del:SetPoint("RIGHT", r, "RIGHT", -6, 0)
             del:SetText("X")
-            local lid = l.id
+            local cLid = l.id or ""
             del:SetScript("OnClick", function()
-                LC_DeleteListing(lid)
+                LC_DeleteListing(cLid)
                 LC_RefreshUI()
             end)
         end
@@ -529,10 +536,8 @@ function LC_DrawListings()
             wb:SetHeight(18)
             wb:SetPoint("RIGHT", r, "RIGHT", -6, 0)
             wb:SetText("Whisper")
-            local crafter = l.crafter
-            local item    = l.item
             wb:SetScript("OnClick", function()
-                ChatFrame_OpenChat("/w " .. crafter .. " Hi! I'd like you to craft: " .. item)
+                ChatFrame_OpenChat("/w " .. cLcrafter .. " Hi! I'd like you to craft: " .. cLitem)
             end)
         end
     end
@@ -600,61 +605,67 @@ function LC_DrawBuyOrders()
         y = y - ROW_HEIGHT - ROW_PAD
         count = count + 1
 
-        local isMe = (o.buyer == me)
-        local status = o.status or "open"
-        local statusInfo = LC_ORDER_STATUS and LC_ORDER_STATUS[status]
+        -- Capture all fields NOW before any closures (Lua 5.0 upvalue fix)
+        local cBuyer   = o.buyer or "?"
+        local cItem    = o.item  or "?"
+        local cPayment = o.payment or "Negotiable"
+        local cNote    = o.note  or ""
+        local cId      = o.id    or ""
+        local cStatus  = o.status or "open"
+
+        local isMe      = (cBuyer == me)
+        local statusInfo  = LC_ORDER_STATUS and LC_ORDER_STATUS[cStatus]
         local statusLabel = statusInfo and statusInfo.label or "Open"
         local statusColor = statusInfo and statusInfo.color or "ff888888"
+        local nextLabel   = statusInfo and LC_ORDER_STATUS[statusInfo.next] and LC_ORDER_STATUS[statusInfo.next].label or "Open"
 
         -- Dim filled rows slightly
-        if status == "filled" then
+        if cStatus == "filled" then
             local dimBg = r:CreateTexture(nil, "BACKGROUND")
             dimBg:SetAllPoints(r)
             dimBg:SetTexture(0, 0.3, 0, 0.15)
         end
 
         -- Buyer name (class coloured)
-        local buyerData = LC_Registry[o.buyer]
+        local buyerData = LC_Registry[cBuyer]
         local cc = LC_ClassColor(buyerData and buyerData.class or nil)
         local bLbl = r:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         bLbl:SetPoint("LEFT", r, "LEFT", 8, 0)
         bLbl:SetWidth(95)
-        bLbl:SetText("|c" .. cc .. o.buyer .. CLR.reset)
+        bLbl:SetText("|c" .. cc .. cBuyer .. CLR.reset)
 
         -- Item - orange tint for mat requests
         local iLbl = r:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         iLbl:SetPoint("LEFT", r, "LEFT", 105, 0)
         iLbl:SetWidth(140)
-        local iMatRequest = o.note and string.find(o.note, "^%[Mat Request%]") ~= nil
+        local iMatRequest = string.find(cNote, "^%[Mat Request%]") ~= nil
         local iItemCol = iMatRequest and "|cffffaa00" or CLR.gold
-        local iPrefix  = iMatRequest and "⛏ " or ""
-        iLbl:SetText(iItemCol .. iPrefix .. (o.item or "?") .. CLR.reset)
+        local iPrefix  = iMatRequest and "+ " or ""
+        iLbl:SetText(iItemCol .. iPrefix .. cItem .. CLR.reset)
 
         -- Payment + note
-        local pStr = (o.payment or "Negotiable")
-        if o.note and o.note ~= "" then
-            pStr = pStr .. CLR.grey .. " " .. o.note .. CLR.reset
+        local pStr = cPayment
+        if cNote ~= "" then
+            pStr = pStr .. CLR.grey .. " " .. cNote .. CLR.reset
         end
         local pLbl = r:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         pLbl:SetPoint("LEFT", r, "LEFT", 248, 0)
         pLbl:SetWidth(100)
         pLbl:SetText(CLR.teal .. pStr .. CLR.reset)
 
-        -- Status button (anyone can advance status to coordinate)
+        -- Status button
         local sb = CreateFrame("Button", nil, r, "UIPanelButtonTemplate")
         sb:SetWidth(78)
         sb:SetHeight(18)
         sb:SetPoint("RIGHT", r, "RIGHT", -34, 0)
         sb:SetText("|c" .. statusColor .. statusLabel .. CLR.reset)
-        local oid = o.id
         sb:SetScript("OnClick", function()
-            LC_CycleBuyOrderStatus(oid)
+            LC_CycleBuyOrderStatus(cId)
         end)
         sb:SetScript("OnEnter", function()
             GameTooltip:SetOwner(sb, "ANCHOR_RIGHT")
             GameTooltip:SetText("Order Status")
-            local nextInfo = statusInfo and LC_ORDER_STATUS[statusInfo.next]
-            GameTooltip:AddLine("Click to advance to: " .. (nextInfo and nextInfo.label or "Open"), 0.8, 0.8, 0.8)
+            GameTooltip:AddLine("Click to advance to: " .. nextLabel, 0.8, 0.8, 0.8)
             GameTooltip:AddLine("Open: waiting for crafter", 0.6, 0.6, 0.6)
             GameTooltip:AddLine("Mats Sent: buyer sent materials", 1, 0.84, 0)
             GameTooltip:AddLine("In Progress: crafter is working", 0, 0.67, 1)
@@ -671,7 +682,7 @@ function LC_DrawBuyOrders()
             del:SetPoint("RIGHT", r, "RIGHT", -6, 0)
             del:SetText("X")
             del:SetScript("OnClick", function()
-                LC_DeleteBuyOrder(oid)
+                LC_DeleteBuyOrder(cId)
                 LC_RefreshUI()
             end)
         end
@@ -685,14 +696,12 @@ function LC_DrawBuyOrders()
             wb:SetText("W")
             wb:SetScript("OnEnter", function()
                 GameTooltip:SetOwner(wb, "ANCHOR_RIGHT")
-                GameTooltip:SetText("Whisper " .. o.buyer)
+                GameTooltip:SetText("Whisper " .. cBuyer)
                 GameTooltip:Show()
             end)
             wb:SetScript("OnLeave", function() GameTooltip:Hide() end)
-            local buyer = o.buyer
-            local item  = o.item
             wb:SetScript("OnClick", function()
-                ChatFrame_OpenChat("/w " .. buyer .. " Hi! I can craft " .. item .. " for you.")
+                ChatFrame_OpenChat("/w " .. cBuyer .. " Hi! I can craft " .. cItem .. " for you.")
             end)
         end
     end
