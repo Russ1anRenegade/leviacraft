@@ -160,6 +160,119 @@ end
 LC_DELIM     = ":"    -- colon, safe in addon messages
 LC_SendQueue = {}
 
+-- ============================================================
+-- Encryption: XOR cipher with base-85 output
+-- Shared key known only to LeviaCraft clients.
+-- XOR each byte of the message against a rotating key byte,
+-- then encode to printable ASCII (offset 33-117) so the result
+-- is safe in WoW channel messages and won't trigger chat filters.
+-- ============================================================
+LC_CRYPT_KEY = "L3v1aCr4ft_0ct0W0W_K3y_2024_S3cur3!"
+
+-- ============================================================
+-- Crypto: XOR cipher + base-64 encoding (custom safe alphabet)
+-- Alphabet: A-Z a-z 0-9 ! @ (64 chars, no | : ~ which cause issues)
+-- Padding: - (safe, not in alphabet)
+-- Overhead: ~1.4x vs 2x for previous hex scheme
+-- Key table pre-expanded to 512 entries for speed
+-- ============================================================
+LC_B64     = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@"
+LC_B64_PAD = "-"
+LC_B64_REV = nil   -- built on first use
+LC_KEY_TABLE = nil  -- built on first use
+
+function LC_BuildCryptoTables()
+    if LC_KEY_TABLE then return end
+    -- Key table: 512 entries of repeating key bytes (0-indexed access via kt[i])
+    local key = LC_CRYPT_KEY
+    local kl  = string.len(key)
+    LC_KEY_TABLE = {}
+    for i = 1, 512 do
+        LC_KEY_TABLE[i] = string.byte(key, mod(i - 1, kl) + 1)
+    end
+    -- Reverse lookup for base64 decode
+    LC_B64_REV = {}
+    for j = 1, 64 do
+        LC_B64_REV[ string.sub(LC_B64, j, j) ] = j - 1
+    end
+end
+
+-- XOR two bytes; uses math.floor to avoid Lua 5.0 float division
+function LC_XOR(a, b)
+    local r = 0; local p = 1
+    while a > 0 or b > 0 do
+        if mod(a, 2) ~= mod(b, 2) then r = r + p end
+        a = math.floor(a / 2)
+        b = math.floor(b / 2)
+        p = p * 2
+    end
+    return r
+end
+
+function LC_Encrypt(plain)
+    if not plain or plain == "" then return "" end
+    LC_BuildCryptoTables()
+    local kt  = LC_KEY_TABLE
+    local b64 = LC_B64
+    local pad = LC_B64_PAD
+    local ln  = string.len(plain)
+    local out = {}
+    local oi  = 1   -- output index (1-based, 4 chars per group)
+    local i   = 1   -- input byte index (1-based)
+    while i <= ln do
+        local b0 = LC_XOR(string.byte(plain, i), kt[i])
+        local b1 = 0; local b2 = 0
+        if i + 1 <= ln then b1 = LC_XOR(string.byte(plain, i + 1), kt[i + 1]) end
+        if i + 2 <= ln then b2 = LC_XOR(string.byte(plain, i + 2), kt[i + 2]) end
+        local n = b0 * 65536 + b1 * 256 + b2
+        out[oi]   = string.sub(b64, math.floor(n / 262144) + 1,             math.floor(n / 262144) + 1)
+        out[oi+1] = string.sub(b64, math.floor(mod(n, 262144) / 4096) + 1,  math.floor(mod(n, 262144) / 4096) + 1)
+        out[oi+2] = (i + 1 > ln) and pad or string.sub(b64, math.floor(mod(n, 4096) / 64) + 1, math.floor(mod(n, 4096) / 64) + 1)
+        out[oi+3] = (i + 2 > ln) and pad or string.sub(b64, mod(n, 64) + 1, mod(n, 64) + 1)
+        oi = oi + 4
+        i  = i  + 3
+    end
+    return table.concat(out)
+end
+
+function LC_Decrypt(cipher)
+    if not cipher or cipher == "" then return "" end
+    LC_BuildCryptoTables()
+    local kt  = LC_KEY_TABLE
+    local rev = LC_B64_REV
+    local pad = LC_B64_PAD
+    local ln  = string.len(cipher)
+    local out = {}
+    local oi  = 1   -- output byte index
+    local i   = 1   -- input char index
+    while i <= ln - 3 do
+        local c1 = string.sub(cipher, i,   i)
+        local c2 = string.sub(cipher, i+1, i+1)
+        local c3 = string.sub(cipher, i+2, i+2)
+        local c4 = string.sub(cipher, i+3, i+3)
+        local n  = (rev[c1] or 0) * 262144
+                 + (rev[c2] or 0) * 4096
+                 + (rev[c3] or 0) * 64
+                 + (rev[c4] or 0)
+        local b0 = math.floor(n / 65536)
+        local b1 = math.floor(mod(n, 65536) / 256)
+        local b2 = mod(n, 256)
+        out[oi] = string.char(LC_XOR(b0, kt[oi]))
+        if c3 ~= pad then
+            out[oi + 1] = string.char(LC_XOR(b1, kt[oi + 1]))
+        end
+        if c4 ~= pad then
+            out[oi + 2] = string.char(LC_XOR(b2, kt[oi + 2]))
+        end
+        if c4 ~= pad then oi = oi + 3
+        elseif c3 ~= pad then oi = oi + 2
+        else oi = oi + 1 end
+        i = i + 4
+    end
+    return table.concat(out)
+end
+
+
 -- Queue one send; drains one-per-frame via lcThrottle
 -- ============================================================
 -- Channel comms: join a custom "LeviaCraft" world channel and
@@ -523,11 +636,14 @@ end)
 -- arg1=message, arg2=sender, arg3=language, arg4=channelString, arg5=?, arg6=?, arg7=channelNum, arg8=channelName
 function LC_OnChannelMessage(msg, sender)
     if sender == UnitName("player") then return end
-    -- Quick prefix check before expensive parse
+    -- Check prefix (unencrypted marker)
     if not string.find(msg, "^" .. LEVIA_CRAFT_PREFIX .. ":") then return end
-    -- Remove prefix, then split msgType:payload on first colon
-    local withoutPrefix = string.sub(msg, string.len(LEVIA_CRAFT_PREFIX) + 2)
-    local msgType, rest = LC_Match(withoutPrefix, "^([^:]+):(.*)$")
+    -- Strip prefix, decrypt the rest
+    local encrypted = string.sub(msg, string.len(LEVIA_CRAFT_PREFIX) + 2)
+    local plain = LC_Decrypt(encrypted)
+    if not plain or plain == "" then return end
+    -- Split decrypted msgType:payload
+    local msgType, rest = LC_Match(plain, "^([^:]+):(.*)$")
     if not msgType then return end
     LC_DispatchMessage(msgType, rest, sender)
 end
