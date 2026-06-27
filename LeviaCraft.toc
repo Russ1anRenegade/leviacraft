@@ -2,7 +2,7 @@
 ## Title: LeviaCraft
 ## Notes: Levia guild crafting marketplace - profession registry, buy orders, and craft requests
 ## Author: Levia
-## Version: 1.0
+## Version: 2.0
 ## LoadOnDemand: 0
 ## SavedVariables: LeviaCraftDB
 

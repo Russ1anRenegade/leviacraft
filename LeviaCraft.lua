@@ -3,7 +3,7 @@
 -- Profession registry + buy orders + craft listings via addon messaging
 
 LEVIA_CRAFT_PREFIX = "LeviaCraft"
-LEVIA_CRAFT_VERSION = "1.0"
+LEVIA_CRAFT_VERSION = "2.0"
 
 -- Message type tokens (kept short to save message space)
 LC_MSG = {
@@ -72,7 +72,7 @@ LC_OrderSeq    = 0    -- incrementing id for orders (combined with timestamp for
 -- Rate limiter: don't broadcast professions more than once every 8 seconds.
 -- The ticker fires every 10s but HELLO/PING responses also trigger broadcasts.
 LC_LastBroadcast   = 0
-LC_BROADCAST_COOLDOWN = 8   -- seconds
+LC_BROADCAST_COOLDOWN = 20  -- seconds
 
 -- ============================================================
 -- Profession scanning
@@ -187,7 +187,7 @@ LC_CRYPT_KEY = "L3v1aCr4ft_0ct0W0W_K3y_2024_S3cur3!"
 LC_CHANNEL_NAME = "LeviaCraft"
 LC_CHANNEL_ID   = nil    -- set once we confirm the channel number
 LC_SendQueue    = {}
-LC_SEND_RATE    = 2.0    -- seconds between bulk sends
+LC_SEND_RATE    = 5.0    -- seconds between bulk sends (increased to avoid timeout)
 LC_SendAcc      = 0
 
 -- Join our custom channel on load; retry if not yet available
@@ -243,7 +243,7 @@ LC_PRIORITY_MSGS = {
     [LC_MSG.PING]      = true,
 }
 LC_LastPrioritySend  = 0
-LC_PRIORITY_RATE     = 1.5   -- minimum gap between priority sends
+LC_PRIORITY_RATE     = 4.0   -- minimum gap between priority sends
 -- Inter-player gap removed - was blocking sends in busy channels
 -- Per-message rate limit alone is sufficient anti-spam protection
 
@@ -547,7 +547,7 @@ LC_ChunkBuffer = {}
 -- Heartbeat tracking
 -- LC_HeartbeatMissed[player] = number of consecutive missed beats
 LC_HeartbeatMissed  = {}
-LC_BEAT_INTERVAL    = 15    -- seconds between heartbeats
+LC_BEAT_INTERVAL    = 45    -- seconds between heartbeats (proportional to send rate)
 LC_BEAT_MISS_LIMIT  = 3     -- missed beats before marking offline
 LC_BeatAcc          = 0
 
@@ -921,7 +921,7 @@ end
 -- ============================================================
 LC_ScanTicker = nil
 LC_ScanElapsed = 0
-LC_SCAN_INTERVAL = 20   -- seconds between full re-broadcasts
+LC_SCAN_INTERVAL = 60   -- seconds between full re-broadcasts
 
 function LC_StartScanTicker()
     if LC_ScanTicker then return end  -- already running
