@@ -172,108 +172,6 @@ LC_SendQueue = {}
 -- ============================================================
 LC_CRYPT_KEY = "L3v1aCr4ft_0ct0W0W_K3y_2024_S3cur3!"
 
--- ============================================================
--- Crypto: XOR cipher + base-64 encoding (custom safe alphabet)
--- Alphabet: A-Z a-z 0-9 ! @ (64 chars, no | : ~ which cause issues)
--- Padding: - (safe, not in alphabet)
--- Overhead: ~1.4x vs 2x for previous hex scheme
--- Key table pre-expanded to 512 entries for speed
--- ============================================================
-LC_B64     = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@"
-LC_B64_PAD = "-"
-LC_B64_REV = nil   -- built on first use
-LC_KEY_TABLE = nil  -- built on first use
-
-function LC_BuildCryptoTables()
-    if LC_KEY_TABLE then return end
-    -- Key table: 512 entries of repeating key bytes (0-indexed access via kt[i])
-    local key = LC_CRYPT_KEY
-    local kl  = string.len(key)
-    LC_KEY_TABLE = {}
-    for i = 1, 512 do
-        LC_KEY_TABLE[i] = string.byte(key, mod(i - 1, kl) + 1)
-    end
-    -- Reverse lookup for base64 decode
-    LC_B64_REV = {}
-    for j = 1, 64 do
-        LC_B64_REV[ string.sub(LC_B64, j, j) ] = j - 1
-    end
-end
-
--- XOR two bytes; uses math.floor to avoid Lua 5.0 float division
-function LC_XOR(a, b)
-    local r = 0; local p = 1
-    while a > 0 or b > 0 do
-        if mod(a, 2) ~= mod(b, 2) then r = r + p end
-        a = math.floor(a / 2)
-        b = math.floor(b / 2)
-        p = p * 2
-    end
-    return r
-end
-
-function LC_Encrypt(plain)
-    if not plain or plain == "" then return "" end
-    LC_BuildCryptoTables()
-    local kt  = LC_KEY_TABLE
-    local b64 = LC_B64
-    local pad = LC_B64_PAD
-    local ln  = string.len(plain)
-    local out = {}
-    local oi  = 1   -- output index (1-based, 4 chars per group)
-    local i   = 1   -- input byte index (1-based)
-    while i <= ln do
-        local b0 = LC_XOR(string.byte(plain, i), kt[i])
-        local b1 = 0; local b2 = 0
-        if i + 1 <= ln then b1 = LC_XOR(string.byte(plain, i + 1), kt[i + 1]) end
-        if i + 2 <= ln then b2 = LC_XOR(string.byte(plain, i + 2), kt[i + 2]) end
-        local n = b0 * 65536 + b1 * 256 + b2
-        out[oi]   = string.sub(b64, math.floor(n / 262144) + 1,             math.floor(n / 262144) + 1)
-        out[oi+1] = string.sub(b64, math.floor(mod(n, 262144) / 4096) + 1,  math.floor(mod(n, 262144) / 4096) + 1)
-        out[oi+2] = (i + 1 > ln) and pad or string.sub(b64, math.floor(mod(n, 4096) / 64) + 1, math.floor(mod(n, 4096) / 64) + 1)
-        out[oi+3] = (i + 2 > ln) and pad or string.sub(b64, mod(n, 64) + 1, mod(n, 64) + 1)
-        oi = oi + 4
-        i  = i  + 3
-    end
-    return table.concat(out)
-end
-
-function LC_Decrypt(cipher)
-    if not cipher or cipher == "" then return "" end
-    LC_BuildCryptoTables()
-    local kt  = LC_KEY_TABLE
-    local rev = LC_B64_REV
-    local pad = LC_B64_PAD
-    local ln  = string.len(cipher)
-    local out = {}
-    local oi  = 1   -- output byte index
-    local i   = 1   -- input char index
-    while i <= ln - 3 do
-        local c1 = string.sub(cipher, i,   i)
-        local c2 = string.sub(cipher, i+1, i+1)
-        local c3 = string.sub(cipher, i+2, i+2)
-        local c4 = string.sub(cipher, i+3, i+3)
-        local n  = (rev[c1] or 0) * 262144
-                 + (rev[c2] or 0) * 4096
-                 + (rev[c3] or 0) * 64
-                 + (rev[c4] or 0)
-        local b0 = math.floor(n / 65536)
-        local b1 = math.floor(mod(n, 65536) / 256)
-        local b2 = mod(n, 256)
-        out[oi] = string.char(LC_XOR(b0, kt[oi]))
-        if c3 ~= pad then
-            out[oi + 1] = string.char(LC_XOR(b1, kt[oi + 1]))
-        end
-        if c4 ~= pad then
-            out[oi + 2] = string.char(LC_XOR(b2, kt[oi + 2]))
-        end
-        if c4 ~= pad then oi = oi + 3
-        elseif c3 ~= pad then oi = oi + 2
-        else oi = oi + 1 end
-        i = i + 4
-    end
-    return table.concat(out)
-end
 
 
 -- Queue one send; drains one-per-frame via lcThrottle
@@ -289,7 +187,7 @@ end
 LC_CHANNEL_NAME = "LeviaCraft"
 LC_CHANNEL_ID   = nil    -- set once we confirm the channel number
 LC_SendQueue    = {}
-LC_SEND_RATE    = 3.5    -- seconds between sends (2s added for anti-spam)
+LC_SEND_RATE    = 2.0    -- seconds between bulk sends
 LC_SendAcc      = 0
 
 -- Join our custom channel on load; retry if not yet available
@@ -308,20 +206,14 @@ end
 
 function LC_HideChannel(channelId)
     if not channelId then return end
-    -- Remove from all chat frames (vanilla 1.12 global function)
-    for i = 1, 10 do
-        local frame = getglobal("ChatFrame" .. i)
-        if frame then
-            ChatFrame_RemoveChannel(frame, LC_CHANNEL_NAME)
-        end
-    end
-    -- Set text color to fully transparent so any that slip through are invisible
+    -- DO NOT use ChatFrame_RemoveChannel - on some private server builds this
+    -- suppresses CHAT_MSG_CHANNEL events entirely, breaking addon message receipt.
+    -- Instead just make the channel text invisible by zeroing its color.
     local key = "CHANNEL" .. tostring(channelId)
     if ChatTypeInfo and ChatTypeInfo[key] then
         ChatTypeInfo[key].r = 0
         ChatTypeInfo[key].g = 0
         ChatTypeInfo[key].b = 0
-        ChatTypeInfo[key].hidden = 1
     end
 end
 
@@ -351,30 +243,43 @@ LC_PRIORITY_MSGS = {
     [LC_MSG.PING]      = true,
 }
 LC_LastPrioritySend  = 0
-LC_PRIORITY_RATE     = 2.5   -- minimum gap between priority sends (anti-spam)
-LC_LastChannelRecv   = 0     -- time we last saw ANY message on the channel
-LC_INTER_PLAYER_GAP  = 1.0   -- seconds to wait after others speak before sending
+LC_PRIORITY_RATE     = 1.5   -- minimum gap between priority sends
+-- Inter-player gap removed - was blocking sends in busy channels
+-- Per-message rate limit alone is sufficient anti-spam protection
+
+function LC_GetChannelID()
+    -- Always look up fresh - never trust cached ID
+    for i = 1, 20 do
+        local id, name = GetChannelName(i)
+        if name and string.find(string.lower(name), string.lower(LC_CHANNEL_NAME)) then
+            LC_CHANNEL_ID = id
+            return id
+        end
+    end
+    return nil
+end
 
 function LC_RawSend(msg)
-    if not LC_CHANNEL_ID then
-        if not LC_FindChannel() then return false end
+    local chanID = LC_GetChannelID()
+    if not chanID then
+        -- Not in channel yet, try joining
+        JoinChannelByName(LC_CHANNEL_NAME)
+        chanID = LC_GetChannelID()
+        if not chanID then return false end
     end
-    SendChatMessage(msg, "CHANNEL", nil, LC_CHANNEL_ID)
+    SendChatMessage(msg, "CHANNEL", nil, chanID)
     return true
 end
 
 function LC_Send(msgType, payload)
-    -- Encrypt msgType:payload, prepend unencrypted prefix for filtering
-    local plain = msgType .. ":" .. (payload or "")
-    local msg   = LEVIA_CRAFT_PREFIX .. ":" .. LC_Encrypt(plain)
+    local msg = LEVIA_CRAFT_PREFIX .. ":" .. msgType .. ":" .. (payload or "")
     if string.len(msg) > 240 then msg = string.sub(msg, 1, 240) end
 
     if LC_PRIORITY_MSGS[msgType] then
         -- Send immediately if enough time has passed, else front of queue
         local now = GetTime()
-        local sinceRecv = now - LC_LastChannelRecv
         local sinceSent = now - LC_LastPrioritySend
-        if sinceSent >= LC_PRIORITY_RATE and sinceRecv >= LC_INTER_PLAYER_GAP then
+        if sinceSent >= LC_PRIORITY_RATE then
             if LC_RawSend(msg) then
                 LC_LastPrioritySend = now
                 return
@@ -394,8 +299,6 @@ lcThrottle:SetScript("OnUpdate", function()
     if table.getn(LC_SendQueue) == 0 then return end
     LC_SendAcc = LC_SendAcc + arg1
     if LC_SendAcc < LC_SEND_RATE then return end
-    -- Also wait for inter-player gap before bulk sends
-    if (GetTime() - LC_LastChannelRecv) < LC_INTER_PLAYER_GAP then return end
     LC_SendAcc = 0
     local msg = table.remove(LC_SendQueue, 1)
     LC_RawSend(msg)
@@ -429,6 +332,9 @@ function LC_BroadcastProfessions(force)
         parts[table.getn(parts) + 1] = p.name .. ":" .. p.skill .. ":" .. p.max
     end
     local payload = me .. "~" .. (class or "?") .. "~" .. table.concat(parts, ";")
+    if LC_DEBUG_RECV then
+        LC_Print("SENDING PD: " .. string.sub(payload, 1, 80))
+    end
     LC_Send(LC_MSG.PROF_DATA, payload)
 end
 
@@ -472,6 +378,7 @@ function LC_TickerBroadcastListings()
         end
     end
     -- Re-broadcast our tombstones so late joiners apply our deletes
+    if not LeviaCraftDB.deleted then LeviaCraftDB.deleted = {} end
     for id, tomb in pairs(LeviaCraftDB.deleted) do
         if tomb.owner == me then
             if tomb.kind == "L" then
@@ -549,6 +456,7 @@ function LC_DeleteListing(id)
     LC_MyListings[id] = nil
     LeviaCraftDB.listings[id] = nil
     -- Store tombstone so ticker can re-broadcast the delete to late joiners
+    if not LeviaCraftDB.deleted then LeviaCraftDB.deleted = {} end
     LeviaCraftDB.deleted[id] = { owner = UnitName("player"), t = GetTime(), kind = "L" }
     LC_Send(LC_MSG.DEL_LIST, id)
     LC_UIDirty = true
@@ -557,6 +465,7 @@ end
 function LC_DeleteBuyOrder(id)
     LC_MyBuys[id] = nil
     LeviaCraftDB.orders[id] = nil
+    if not LeviaCraftDB.deleted then LeviaCraftDB.deleted = {} end
     LeviaCraftDB.deleted[id] = { owner = UnitName("player"), t = GetTime(), kind = "B" }
     LC_Send(LC_MSG.DEL_BUY, id)
     LC_UIDirty = true
@@ -564,6 +473,7 @@ end
 
 -- Prune tombstones older than 24 hours (86400s) to keep SavedVariables tidy
 function LC_PruneTombstones()
+    if not LeviaCraftDB or not LeviaCraftDB.deleted then return end
     local now = GetTime()
     for id, tomb in pairs(LeviaCraftDB.deleted) do
         if (now - tomb.t) > 86400 then
@@ -678,29 +588,46 @@ end)
 -- Receive from CHAT_MSG_CHANNEL
 -- Format: "LeviaCraft:MSGTYPE:payload"
 -- arg1=message, arg2=sender, arg3=language, arg4=channelString, arg5=?, arg6=?, arg7=channelNum, arg8=channelName
+-- Raw debug frame - catches ALL channel events with zero filtering
+-- This tells us if CHAT_MSG_CHANNEL fires at all for other players
+local lcRawDebug = CreateFrame("Frame")
+lcRawDebug:RegisterEvent("CHAT_MSG_CHANNEL")
+lcRawDebug:SetScript("OnEvent", function()
+    if LC_DEBUG_RECV then
+        LC_Print("RAW_CHAN: from=" .. tostring(arg2) .. " msg=" .. string.sub(tostring(arg1), 1, 50))
+    end
+end)
+
 function LC_OnChannelMessage(msg, sender)
     if sender == UnitName("player") then return end
-    -- Track when others last spoke so we can pause before sending
-    LC_LastChannelRecv = GetTime()
-    -- Check prefix (unencrypted marker)
-    if not string.find(msg, "^" .. LEVIA_CRAFT_PREFIX .. ":") then return end
-    -- Strip prefix, decrypt the rest
-    local encrypted = string.sub(msg, string.len(LEVIA_CRAFT_PREFIX) + 2)
-    local plain = LC_Decrypt(encrypted)
-    if not plain or plain == "" then return end
-    -- Split decrypted msgType:payload
-    local msgType, rest = LC_Match(plain, "^([^:]+):(.*)$")
+    -- Strip "LeviaCraft:" prefix, then split msgType:payload
+    local withoutPrefix = string.sub(msg, string.len(LEVIA_CRAFT_PREFIX) + 2)
+    local msgType, rest = LC_Match(withoutPrefix, "^([^:]+):(.*)$")
     if not msgType then return end
     LC_DispatchMessage(msgType, rest, sender)
 end
 
 function LC_DispatchMessage(msgType, payload, sender)
+    -- Any message from a sender means they're online - update their status
+    if sender and sender ~= "" and sender ~= UnitName("player") then
+        LC_HeartbeatMissed[sender] = 0
+        if LC_Registry[sender] then
+            if not LC_Registry[sender].online then
+                LC_Registry[sender].online = true
+                LC_UIDirty = true
+            end
+        else
+            -- Create stub entry for unknown senders
+            LC_Registry[sender] = { profs = {}, online = true, updated = GetTime() }
+            LC_UIDirty = true
+        end
+    end
+
     if msgType == LC_MSG.PROF_DATA then
         LC_HandleProfData(payload, sender)
 
     elseif msgType == LC_MSG.HELLO then
-        -- Someone logged in: mark them online (create stub if unknown)
-        -- and respond with our data + a beat so they see us immediately
+        -- Someone logged in: mark them online immediately
         if not LC_Registry[sender] then
             LC_Registry[sender] = { profs = {}, online = true, updated = GetTime() }
         else
@@ -708,10 +635,10 @@ function LC_DispatchMessage(msgType, payload, sender)
         end
         LC_HeartbeatMissed[sender] = 0
         LC_UIDirty = true
-        -- Respond: send our beat immediately so they see us, then full data
+        -- Respond immediately with beat + profession data (staggered to avoid collision)
         LC_Send(LC_MSG.BEAT, UnitName("player"))
-        LC_ScheduleBroadcast(math.random(1, 4))
-        LC_ScheduleListingBroadcast(math.random(2, 6))
+        LC_ScheduleBroadcast(math.random(1, 3))
+        LC_ScheduleListingBroadcast(math.random(2, 5))
 
     elseif msgType == LC_MSG.REQUEST then
         -- Someone wants our data - send beat first so they see us online fast
@@ -734,11 +661,13 @@ function LC_DispatchMessage(msgType, payload, sender)
     elseif msgType == LC_MSG.DEL_LIST then
         LeviaCraftDB.listings[payload] = nil
         -- Store tombstone so re-broadcast of old POST doesn't resurrect it
+        if not LeviaCraftDB.deleted then LeviaCraftDB.deleted = {} end
         LeviaCraftDB.deleted[payload] = { owner = sender, t = GetTime(), kind = "L" }
         LC_UIDirty = true
 
     elseif msgType == LC_MSG.DEL_BUY then
         LeviaCraftDB.orders[payload] = nil
+        if not LeviaCraftDB.deleted then LeviaCraftDB.deleted = {} end
         LeviaCraftDB.deleted[payload] = { owner = sender, t = GetTime(), kind = "B" }
         LC_UIDirty = true
 
@@ -794,9 +723,18 @@ function LC_DispatchMessage(msgType, payload, sender)
 end
 
 function LC_HandleProfData(payload, sender)
-    -- Format: name|class|Prof1:skill:max;Prof2:skill:max
+    -- Format: name~class~Prof1:skill:max;Prof2:skill:max
+    if LC_DEBUG_RECV then
+        LC_Print("ProfData from " .. tostring(sender) .. ": [" .. string.sub(tostring(payload),1,80) .. "]")
+    end
     local name, class, profStr = LC_Match(payload, "^([^~]+)~([^~]+)~(.*)$")
-    if not name then return end
+    if not name then
+        if LC_DEBUG_RECV then LC_Print("  -> PARSE FAILED on: " .. tostring(payload)) end
+        return
+    end
+    if LC_DEBUG_RECV then
+        LC_Print("  -> name=" .. tostring(name) .. " class=" .. tostring(class) .. " profs=" .. tostring(profStr))
+    end
 
     local profs = {}
     if profStr and profStr ~= "" then
@@ -823,7 +761,7 @@ function LC_HandleListing(payload)
     local id, crafter, item, price, note = LC_Match(payload, "^([^~]+)~([^~]+)~([^~]+)~([^~]+)~(.*)$")
     if not id then return end
     -- Ignore if we have a tombstone for this ID (it was deleted)
-    if LeviaCraftDB.deleted[id] then return end
+    if LeviaCraftDB.deleted and LeviaCraftDB.deleted[id] then return end
     LeviaCraftDB.listings[id] = {
         id = id, crafter = crafter, item = item,
         price = price, note = note, posted = GetTime(),
@@ -835,7 +773,7 @@ function LC_HandleBuyOrder(payload)
     local id, buyer, item, payment, note = LC_Match(payload, "^([^~]+)~([^~]+)~([^~]+)~([^~]+)~(.*)$")
     if not id then return end
     -- Ignore if tombstoned
-    if LeviaCraftDB.deleted[id] then return end
+    if LeviaCraftDB.deleted and LeviaCraftDB.deleted[id] then return end
     LeviaCraftDB.orders[id] = {
         id = id, buyer = buyer, item = item,
         payment = payment, note = note, posted = GetTime(),
@@ -882,6 +820,40 @@ function LC_SlashHandler(msg)
     elseif cmd == "debug" then
         LC_DEBUG_RECV = not LC_DEBUG_RECV
         LC_Print("Receive debug: " .. (LC_DEBUG_RECV and "|cff00ff00ON|r" or "|cffff4444OFF|r"))
+
+    elseif cmd == "test" then
+        local me = UnitName("player")
+        local profs = LC_ScanMyProfessions()
+        LC_Print("Scanning " .. table.getn(profs) .. " professions for " .. me)
+        for _, p in ipairs(profs) do
+            LC_Print("  " .. p.name .. " " .. p.skill .. "/" .. p.max)
+        end
+        -- Show fresh channel lookup
+        local freshID = LC_GetChannelID and LC_GetChannelID() or LC_CHANNEL_ID
+        LC_Print("LC_CHANNEL_ID (cached)=" .. tostring(LC_CHANNEL_ID))
+        LC_Print("Channel (fresh lookup)=" .. tostring(freshID))
+        -- Force send directly to test
+        if freshID then
+            local testMsg = LEVIA_CRAFT_PREFIX .. ":TEST:" .. me
+            SendChatMessage(testMsg, "CHANNEL", nil, freshID)
+            LC_Print("Direct test message sent to channel " .. tostring(freshID))
+        else
+            LC_Print("|cffff0000ERROR: Not in LeviaCraft channel!|r")
+            LC_Print("Attempting to join...")
+            JoinChannelByName(LC_CHANNEL_NAME)
+        end
+        LC_BroadcastProfessions(true)
+        LC_Print("Broadcast queued.")
+
+    elseif cmd == "chan" then
+        -- Print channel info
+        for i = 1, 10 do
+            local id, name = GetChannelName(i)
+            if id and id > 0 then
+                LC_Print("Channel " .. i .. ": id=" .. tostring(id) .. " name=" .. tostring(name))
+            end
+        end
+        LC_Print("LC_CHANNEL_ID=" .. tostring(LC_CHANNEL_ID))
 
     elseif cmd == "cleardata" then
         LeviaCraftDB.registry = {}
@@ -1040,17 +1012,27 @@ frame:SetScript("OnEvent", function()
         LC_Print("Loaded v" .. LEVIA_CRAFT_VERSION .. "  |cff888888/lcraft help|r")
 
     elseif event == "PLAYER_LOGIN" then
-        -- Wait 3s for guild channel to be available, then start the repeating scan ticker
+        -- Wait for channel to be fully available before broadcasting
+        -- Poll every 0.5s until LC_CHANNEL_ID is set, then start
+        LC_CreateMinimapButton()
         local t = CreateFrame("Frame")
         local elapsed = 0
         t:SetScript("OnUpdate", function()
             elapsed = elapsed + arg1
-            if elapsed >= 3 then
-                t:SetScript("OnUpdate", nil)
+            -- Try joining channel after 2s
+            if elapsed >= 2 and not LC_CHANNEL_ID then
                 LC_JoinChannel()
-                LC_CreateMinimapButton()
+            end
+            -- Once channel is confirmed, start everything
+            if elapsed >= 2 and LC_CHANNEL_ID then
+                t:SetScript("OnUpdate", nil)
+                LC_Send(LC_MSG.BEAT, UnitName("player"))
                 LC_Send(LC_MSG.HELLO, UnitName("player"))
-                -- Start repeating 10s scan ticker
+                LC_StartScanTicker()
+            end
+            -- Hard timeout: start anyway after 8s even without channel ID
+            if elapsed >= 8 then
+                t:SetScript("OnUpdate", nil)
                 LC_StartScanTicker()
             end
         end)
@@ -1069,21 +1051,16 @@ frame:SetScript("OnEvent", function()
         end
 
     elseif event == "CHAT_MSG_CHANNEL" then
-        -- In vanilla 1.12, arg4 = "N. ChannelName" format
-        -- Check arg4 contains our channel name, OR message starts with our prefix
-        -- (belt-and-suspenders: if channel name check fails, prefix check catches it)
-        local isOurChannel = false
-        if arg4 then
-            isOurChannel = string.find(string.lower(arg4), string.lower(LC_CHANNEL_NAME)) ~= nil
+        -- Dump raw args in debug mode so we can see exactly what arrives
+        if LC_DEBUG_RECV then
+            LC_Print("CHAN_EVENT: arg1=" .. string.sub(tostring(arg1),1,40) ..
+                     " arg2=" .. tostring(arg2) ..
+                     " arg4=" .. tostring(arg4) ..
+                     " arg8=" .. tostring(arg8) ..
+                     " arg9=" .. tostring(arg9))
         end
-        if not isOurChannel and arg9 then
-            isOurChannel = string.lower(arg9) == string.lower(LC_CHANNEL_NAME)
-        end
-        -- Fallback: just check the message prefix
-        if not isOurChannel then
-            isOurChannel = string.find(arg1 or "", "^" .. LEVIA_CRAFT_PREFIX .. ":") ~= nil
-        end
-        if isOurChannel then
+        -- Accept any message that starts with our prefix - simplest possible filter
+        if arg1 and string.find(arg1, "^" .. LEVIA_CRAFT_PREFIX .. ":") then
             LC_OnChannelMessage(arg1, arg2)
         end
     end
